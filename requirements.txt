@@ -1,0 +1,5 @@
+PyQt6>=6.5
+numpy>=1.26
+tqdm>=4.66
+# Derleme için (geliştirici makinesinde gerekir)
+pyinstaller>=6.0

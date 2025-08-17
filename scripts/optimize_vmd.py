@@ -174,11 +174,13 @@ def stabilize_ground(motion: Motion,
                      feet_candidates: Optional[List[str]] = None,
                      smooth_window: int = 0,
                      scale: float = 1.0,
-                     root_candidates: Optional[List[str]] = None) -> None:
+                     root_candidates: Optional[List[str]] = None,
+                     exclude_ik: bool = True,
+                     ik_candidates: Optional[List[str]] = None) -> None:
     """
     Ground stabilization: Her framedeki en düşük Y değerini (varsayılan ayak kemikleri) bulup,
     karakteri hedef zemine (target_y) oturtur. Ofseti TÜM kemiklere uygular (global çeviri),
-    böylece IK/ayak sabitken gövdenin "yukarı doğru uzaması" engellenir.
+    ancak varsayılan olarak IK son-efektör kemiklerini hariç tutar (gerilme/uzama artefaktlarını azaltır).
     """
     if feet_candidates is None:
         feet_candidates = [
@@ -186,6 +188,9 @@ def stabilize_ground(motion: Motion,
             'Toe', 'ToeIK', 'Ankle', 'Foot', 'LeftFoot', 'RightFoot', 'LeftAnkle', 'RightAnkle',
             '足', '足ＩＫ', '足IK', '足首'
         ]
+
+    if ik_candidates is None:
+        ik_candidates = ['ＩＫ', 'IK', 'Ik']
 
     # kök adayları (ölçüm için gerekebilir ama artık uygulama tüm kemiklere)
     if root_candidates is None:
@@ -249,8 +254,10 @@ def stabilize_ground(motion: Motion,
                     base = float(y1 * (1 - t) + y2 * t)
         return (base - target_y) * scale
 
-    # Ofseti TÜM kemik keylerine uygula (global yükseltme/alçaltma)
+    # Ofseti TÜM kemik keylerine uygula (gerekirse IK kemiklerini hariç tut)
     for b in motion.bones:
+        if exclude_ik and any(tag in b.name for tag in ik_candidates):
+            continue
         off = y_off_at(int(b.frame))
         b.pos[1] = float(b.pos[1]) - off
 
@@ -600,6 +607,7 @@ def optimize_vmd(input_path: str, output_path: str,
                  ground_use_feet_only: bool = True,
                  ground_smooth_window: int = 0,
                  ground_scale: float = 1.0,
+                 ground_exclude_ik: bool = True,
                  replace_xr_with: Optional[str] = "Barış Keser",
                  progress: Optional[Callable[[str, int, int], None]] = None):
     """
@@ -621,7 +629,8 @@ def optimize_vmd(input_path: str, output_path: str,
     # İstenirse ground stabilization uygula
     if stabilize_ground_flag:
         stabilize_ground(m, target_y=ground_target_y, use_feet_only=ground_use_feet_only,
-                         smooth_window=ground_smooth_window, scale=ground_scale)
+                         smooth_window=ground_smooth_window, scale=ground_scale,
+                         exclude_ik=ground_exclude_ik)
 
     # Kemik motionları
     bone_channels: Dict[str, List[BoneKey]] = defaultdict(list)

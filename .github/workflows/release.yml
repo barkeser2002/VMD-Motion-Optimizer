@@ -11,6 +11,7 @@ on:
       - 'build_exe.bat'
       - 'build_exe.ps1'
       - 'logo.png'
+      - 'icon.ico'
       - '.github/workflows/release.yml'
   workflow_dispatch:
 
@@ -59,9 +60,11 @@ jobs:
       - name: Build (PyInstaller)
         shell: pwsh
         run: |
-          $extra = "--add-data `"scripts;scripts`" --add-data `"version.txt;.`""
-          if (Test-Path logo.png) { $extra = "$extra --add-data `"logo.png;.`"" }
-          python -m PyInstaller --noconfirm --clean --name VMDOptimizer --onedir --windowed $extra scripts/app.py
+          $opts  = @('--noconfirm','--clean','--name','VMDOptimizer','--onedir','--windowed')
+          $extra = @('--add-data','scripts;scripts','--add-data','version.txt;.')
+          if (Test-Path 'logo.png') { $extra += @('--add-data','logo.png;.') }
+          if (Test-Path 'icon.ico') { $extra += @('--add-data','icon.ico;.','--icon','icon.ico') }
+          python -m PyInstaller @opts @extra scripts/app.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -73,7 +76,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
-          name: VMD Motion Optimizer v${{ steps.ver.outputs.version }}
+          name: VMD Motion Optimizer by Barış Keser (barkeser2002) v${{ steps.ver.outputs.version }}
           body: |
             VMD Motion Optimizer by Barış Keser (barkeser2002)
             - See README for usage.

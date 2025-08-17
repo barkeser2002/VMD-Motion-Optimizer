@@ -66,11 +66,21 @@ jobs:
           if (Test-Path 'icon.ico') { $extra += @('--add-data','icon.ico;.','--icon','icon.ico') }
           python -m PyInstaller @opts @extra scripts/app.py
 
-      - name: Upload artifact
+      - name: Archive build as ZIP
+        shell: pwsh
+        run: |
+          $ver = '${{ steps.ver.outputs.version }}'
+          $zip = "VMDOptimizer-$ver.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path "dist/VMDOptimizer/*" -DestinationPath $zip
+
+      - name: Upload artifact (workflow)
         uses: actions/upload-artifact@v4
         with:
           name: VMDOptimizer-${{ steps.ver.outputs.version }}
-          path: dist/VMDOptimizer
+          path: |
+            dist/VMDOptimizer
+            VMDOptimizer-${{ steps.ver.outputs.version }}.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -80,5 +90,7 @@ jobs:
           body: |
             VMD Motion Optimizer by Barış Keser (barkeser2002)
             - See README for usage.
+          files: |
+            VMDOptimizer-${{ steps.ver.outputs.version }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

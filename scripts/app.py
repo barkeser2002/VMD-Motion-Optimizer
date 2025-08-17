@@ -78,8 +78,10 @@ class MainWindow(QtWidgets.QWidget):
         if logo_path:
             pix = QtGui.QPixmap(logo_path)
             if not pix.isNull():
-                self.logo_label.setPixmap(pix.scaledToHeight(64, QtCore.Qt.TransformationMode.SmoothTransformation))
+                scaled = pix.scaledToWidth(700, QtCore.Qt.TransformationMode.SmoothTransformation)
+                self.logo_label.setPixmap(scaled)
                 self.logo_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                self.logo_label.setMinimumWidth(700)
         
         # Inputs
         self.input_edit = QtWidgets.QLineEdit()

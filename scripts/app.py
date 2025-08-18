@@ -50,6 +50,7 @@ class Worker(QtCore.QThread):
     progress_signal = QtCore.pyqtSignal(str, int, int)
     done_signal = QtCore.pyqtSignal(str)
     error_signal = QtCore.pyqtSignal(str)
+    log_signal = QtCore.pyqtSignal(str)
 
     def __init__(self, params: dict, parent=None):
         super().__init__(parent)
@@ -59,7 +60,9 @@ class Worker(QtCore.QThread):
         try:
             def on_progress(section: str, i: int, total: int):
                 self.progress_signal.emit(section, i, total)
-            out = optimize_vmd(progress=on_progress, **self.params)
+            def on_log(msg: str):
+                self.log_signal.emit(str(msg))
+            out = optimize_vmd(progress=on_progress, log=on_log, **self.params)
             self.done_signal.emit(out)
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -104,6 +107,7 @@ class MainWindow(QtWidgets.QWidget):
         self.ground_smooth = QtWidgets.QSpinBox(); self.ground_smooth.setRange(0, 200); self.ground_smooth.setValue(0)
         self.ground_scale = QtWidgets.QDoubleSpinBox(); self.ground_scale.setRange(0.0, 10.0); self.ground_scale.setValue(1.0); self.ground_scale.setSingleStep(0.1)
         self.ground_all_bones = QtWidgets.QCheckBox("Tüm kemikleri kullan (varsayılan: ayak)")
+        self.ground_exclude_ik = QtWidgets.QCheckBox("IK kemiklerini hariç tut (önerilen)"); self.ground_exclude_ik.setChecked(True)
 
         # Profiles
         self.profile_combo = QtWidgets.QComboBox(); self.profile_combo.addItems(DEFAULT_PROFILES.keys())
@@ -133,6 +137,7 @@ class MainWindow(QtWidgets.QWidget):
         form.addRow("Ground smooth window:", self.ground_smooth)
         form.addRow("Ground scale:", self.ground_scale)
         form.addRow(self.ground_all_bones)
+        form.addRow(self.ground_exclude_ik)
         form.addRow("Profil:", self._with_btn(self.profile_combo, self.save_profile_btn))
         form.addRow(self.load_profile_btn)
 
@@ -251,6 +256,7 @@ class MainWindow(QtWidgets.QWidget):
             ground_use_feet_only=not self.ground_all_bones.isChecked(),
             ground_smooth_window=self.ground_smooth.value(),
             ground_scale=self.ground_scale.value(),
+            ground_exclude_ik=self.ground_exclude_ik.isChecked(),
         )
 
         self.progress.setValue(0)
@@ -260,7 +266,12 @@ class MainWindow(QtWidgets.QWidget):
         self.worker.progress_signal.connect(self.on_progress)
         self.worker.done_signal.connect(self.on_done)
         self.worker.error_signal.connect(self.on_error)
+        self.worker.log_signal.connect(self.on_log)
         self.worker.start()
+
+    @QtCore.pyqtSlot(str)
+    def on_log(self, s: str):
+        self.log_text(s)
 
     @QtCore.pyqtSlot(str, int, int)
     def on_progress(self, section: str, i: int, total: int):
@@ -279,6 +290,7 @@ class MainWindow(QtWidgets.QWidget):
     @QtCore.pyqtSlot(str)
     def on_error(self, msg: str):
         self.log_text("Hata: " + msg)
+        QtWidgets.QMessageBox.critical(self, "Hata", msg)
 
 
 def main():

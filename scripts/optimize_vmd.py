@@ -15,6 +15,7 @@ import os
 import tempfile
 import io
 import struct
+import sys
 
 # ---------- Minimal VMD IO (v2) ----------
 
@@ -93,16 +94,16 @@ def _moving_average(values: List[float], window: int) -> List[float]:
 def remove_depth_alignment(motion: Motion,
                            root_candidates: Optional[List[str]] = None,
                            smooth_window: int = 0,
-                           scale: float = 1.0) -> None:
+                           scale: float = 1.0,
+                           log: Optional[Callable[[str], None]] = None) -> None:
     """
-    Global derinlik (Z) ötelemesini kök kemikten ölçer ve TÜM kemiklere uygular.
-    - root_candidates: ['センター','Center','センタ','全ての親','AllParent'] gibi isimlerle kök kemik aranır.
-    - smooth_window: kök Z serisine hareketli ortalama (frame cinsinden) uygular.
-    - scale: çıkarılacak Z ofseti için çarpan.
-    İşlem doğrudan motion.bones üzerinde değişiklik yapar (global çeviri sağlar).
+    Global derinlik (Z) ofsetini kök/merkez kemikten ölçer ve SADECE kök/merkez
+    kemik anahtarlarına uygular (morph güvenli).
+    - root_candidates: ['センター','Center','センタ','全ての親','AllParent','グルーブ','Groove','Root']
+    - smooth_window: kök Z serisine hareketli ortalama uygular (frame cinsinden)
+    - scale: çıkarılacak Z ofseti için çarpan
     """
     if root_candidates is None:
-        # Daha kapsamlı kök aday listesi
         root_candidates = [
             '全ての親', 'AllParent',
             'センター', 'Center', 'センタ',
@@ -118,16 +119,18 @@ def remove_depth_alignment(motion: Motion,
             root_name = cand
             break
     if root_name is None:
-        return  # kök bulunamadı; işlem yok
+        if log: log("Depth: kök/merkez kemik bulunamadı; işlem atlandı")
+        return  # kök bulunamadı; güvenli çık
 
     # root Z serisini topla (frame->z)
-    frames = []
-    zs = []
+    frames: List[int] = []
+    zs: List[float] = []
     for b in motion.bones:
         if b.name == root_name:
             frames.append(int(b.frame))
             zs.append(float(b.pos[2]))
     if not frames:
+        if log: log("Depth: kök kemikte frame bulunamadı; işlem atlandı")
         return
 
     # frame bazlı z listelerini sırala ve eşleştir
@@ -137,6 +140,7 @@ def remove_depth_alignment(motion: Motion,
 
     # yumuşatma uygula
     if smooth_window and smooth_window > 1:
+        if log: log(f"Depth: smooth_window={smooth_window}")
         zs = _moving_average(zs, smooth_window)
 
     # hızlı arama için
@@ -144,11 +148,10 @@ def remove_depth_alignment(motion: Motion,
     z_arr = np.array(zs, dtype=np.float64)
 
     def z_at(f: int) -> float:
-        # tam eşleşme
+        # tam eşleşme veya lineer interpolasyon
         idx = np.searchsorted(frame_arr, f)
         if idx < len(frame_arr) and frame_arr[idx] == f:
             return float(z_arr[idx]) * scale
-        # interpolasyon
         i1 = idx - 1
         i2 = idx
         if i1 < 0:
@@ -162,8 +165,12 @@ def remove_depth_alignment(motion: Motion,
         t = (f - f1) / float(f2 - f1)
         return float(z1 * (1 - t) + z2 * t) * scale
 
-    # TÜM kemik keylerine bu çerçeveye ait Z ofsetini uygula (global çeviri)
+    if log: log(f"Depth: root='{root_name}', keyler={len(frames)}, scale={scale}")
+
+    # SADECE kök kemik anahtarlarına ofset uygula
     for b in motion.bones:
+        if b.name != root_name:
+            continue
         zoff = z_at(int(b.frame))
         b.pos[2] = float(b.pos[2]) - zoff
 
@@ -176,11 +183,10 @@ def stabilize_ground(motion: Motion,
                      scale: float = 1.0,
                      root_candidates: Optional[List[str]] = None,
                      exclude_ik: bool = True,
-                     ik_candidates: Optional[List[str]] = None) -> None:
+                     ik_candidates: Optional[List[str]] = None,
+                     log: Optional[Callable[[str], None]] = None) -> None:
     """
-    Ground stabilization: Her framedeki en düşük Y değerini (varsayılan ayak kemikleri) bulup,
-    karakteri hedef zemine (target_y) oturtur. Ofseti TÜM kemiklere uygular (global çeviri),
-    ancak varsayılan olarak IK son-efektör kemiklerini hariç tutar (gerilme/uzama artefaktlarını azaltır).
+    Min Y ölçümünden elde edilen ofseti SADECE kök/merkez anahtarlarına uygular.
     """
     if feet_candidates is None:
         feet_candidates = [
@@ -192,7 +198,6 @@ def stabilize_ground(motion: Motion,
     if ik_candidates is None:
         ik_candidates = ['ＩＫ', 'IK', 'Ik']
 
-    # kök adayları (ölçüm için gerekebilir ama artık uygulama tüm kemiklere)
     if root_candidates is None:
         root_candidates = [
             '全ての親', 'AllParent',
@@ -203,16 +208,16 @@ def stabilize_ground(motion: Motion,
 
     names = set(b.name for b in motion.bones)
 
-    # Ayak/kemik seçim seti (minY ölçümü için)
+    # Ölçüm için ayak/tüm kemikler seçimi
     if use_feet_only:
-        selected = [n for n in names for cand in feet_candidates if cand in n]
-        selected = set(selected)
+        selected = {n for n in names for cand in feet_candidates if cand in n}
         if not selected:
-            selected = names  # fallback: tüm kemikler
+            selected = names  # fallback
+            if log: log("Ground: ayak kemikleri bulunamadı; tüm kemikler ile ölçüm yapılıyor")
     else:
         selected = names
 
-    # frame -> minY haritası (seçili kemikler arasında)
+    # frame -> minY hesabı
     minY: Dict[int, float] = {}
     for b in motion.bones:
         if b.name not in selected:
@@ -222,18 +227,19 @@ def stabilize_ground(motion: Motion,
         if f not in minY or y < minY[f]:
             minY[f] = y
     if not minY:
+        if log: log("Ground: ölçüm yapılacak key bulunamadı; atlandı")
         return
 
     frames = sorted(minY.keys())
     lows = [minY[f] for f in frames]
     if smooth_window and smooth_window > 1:
+        if log: log(f"Ground: smooth_window={smooth_window}")
         lows = _moving_average(lows, smooth_window)
 
     farr = np.array(frames, dtype=np.int64)
     yarr = np.array(lows, dtype=np.float64)
 
     def y_off_at(f: int) -> float:
-        # minY(f) - target_y
         idx = np.searchsorted(farr, f)
         if idx < len(farr) and farr[idx] == f:
             base = float(yarr[idx])
@@ -254,9 +260,20 @@ def stabilize_ground(motion: Motion,
                     base = float(y1 * (1 - t) + y2 * t)
         return (base - target_y) * scale
 
-    # Ofseti TÜM kemik keylerine uygula (gerekirse IK kemiklerini hariç tut)
+    # Kök/merkez kemiği bul
+    root_name = None
+    for cand in root_candidates:
+        if cand in names:
+            root_name = cand
+            break
+    if root_name is None:
+        if log: log("Ground: kök/merkez kemik bulunamadı; işlem atlandı")
+        return
+    if log: log(f"Ground: root='{root_name}', frames={len(frames)}, target_y={target_y}, scale={scale}, exclude_ik={exclude_ik}")
+
+    # SADECE kök/merkez anahtarlarına ofset uygula
     for b in motion.bones:
-        if exclude_ik and any(tag in b.name for tag in ik_candidates):
+        if b.name != root_name:
             continue
         off = y_off_at(int(b.frame))
         b.pos[1] = float(b.pos[1]) - off
@@ -609,7 +626,8 @@ def optimize_vmd(input_path: str, output_path: str,
                  ground_scale: float = 1.0,
                  ground_exclude_ik: bool = True,
                  replace_xr_with: Optional[str] = "Barış Keser",
-                 progress: Optional[Callable[[str, int, int], None]] = None):
+                 progress: Optional[Callable[[str, int, int], None]] = None,
+                 log: Optional[Callable[[str], None]] = None):
     """
     VMD Motion Optimizer by Barış Keser (barkeser2002)
     - pos_eps: pozisyon için max dünyasal sapma (model birimi)
@@ -618,19 +636,61 @@ def optimize_vmd(input_path: str, output_path: str,
     - key_step: her n karede bir downsample başlangıç filtresi (opsiyonel)
     - preserve_end_keys: her kanalın ilk/son karesini koru
     """
+    def _log(msg: str):
+        if log:
+            try:
+                log(msg)
+            except Exception:
+                pass
+        else:
+            # CLI varsayılanı
+            print(msg)
+
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Girdi bulunamadı: {input_path}")
+    if not output_path:
+        raise ValueError("Geçerli çıktı yolu verilmeli")
+
+    # Parametre doğrulama / düzeltme
+    if pos_eps < 0:
+        _log(f"Uyarı: pos_eps negatif ({pos_eps}), mutlak değeri alınacak")
+        pos_eps = abs(pos_eps)
+    if rot_eps_deg < 0:
+        _log(f"Uyarı: rot_eps_deg negatif ({rot_eps_deg}), mutlak değeri alınacak")
+        rot_eps_deg = abs(rot_eps_deg)
+    if morph_eps < 0:
+        _log(f"Uyarı: morph_eps negatif ({morph_eps}), mutlak değeri alınacak")
+        morph_eps = abs(morph_eps)
+    if key_step < 1:
+        _log(f"Uyarı: key_step<1 ({key_step}), 1 olarak ayarlanıyor")
+        key_step = 1
+
+    _log(f"Girdi: {input_path}")
+    _log(f"Çıktı: {output_path}")
+
     fixed_path = _maybe_fix_vmd_header(input_path)
+    if fixed_path != input_path:
+        _log("Başlık düzeltmesi uygulandı (geçici dosya ile okunuyor)")
+
     m = read_vmd(fixed_path)
     if m is None:
         raise RuntimeError("VMD dosyası okunamadı. Dosya biçimi desteklenmiyor veya bozuk.")
 
-    # İstenirse derinlik hizasını kaldır
+    _log(f"Model: '{m.model_name}', kemik keyleri={len(m.bones)}, morph keyleri={len(m.morphs)}")
+
+    # İstenirse derinlik hizasını kaldır (kök anahtarlarında Z ofset)
     if remove_depth:
-        remove_depth_alignment(m, smooth_window=depth_smooth_window, scale=depth_scale)
-    # İstenirse ground stabilization uygula
+        _log("Depth: Z hizası kaldırma başlıyor")
+        remove_depth_alignment(m, smooth_window=depth_smooth_window, scale=depth_scale, log=_log)
+        _log("Depth: tamamlandı")
+
+    # İstenirse ground stabilization uygula (kök anahtarlarında Y ofset)
     if stabilize_ground_flag:
+        _log("Ground: stabilizasyon başlıyor")
         stabilize_ground(m, target_y=ground_target_y, use_feet_only=ground_use_feet_only,
                          smooth_window=ground_smooth_window, scale=ground_scale,
-                         exclude_ik=ground_exclude_ik)
+                         exclude_ik=ground_exclude_ik, log=_log)
+        _log("Ground: tamamlandı")
 
     # Kemik motionları
     bone_channels: Dict[str, List[BoneKey]] = defaultdict(list)
@@ -770,7 +830,7 @@ def optimize_vmd(input_path: str, output_path: str,
     )
 
     write_vmd(output_path, new_motion)
-
+    _log("Kaydedildi")
     return output_path
 
 
@@ -797,28 +857,31 @@ def main():
     ap.add_argument('--replace-xr-with', type=str, default='Barış Keser', help='"XR Animator" model adını bununla değiştir')
     args = ap.parse_args()
 
-    output = args.output or args.input.replace('.vmd', '_optimized.vmd')
-
-    optimize_vmd(
-        input_path=args.input,
-        output_path=output,
-        pos_eps=args.pos_eps,
-        rot_eps_deg=args.rot_eps_deg,
-        morph_eps=args.morph_eps,
-        key_step=args.key_step,
-        preserve_end_keys=not args.no_preserve_end,
-        remove_depth=args.remove_depth,
-        depth_smooth_window=args.depth_smooth,
-        depth_scale=args.depth_scale,
-        stabilize_ground_flag=args.stabilize_ground,
-        ground_target_y=args.ground_target_y,
-        ground_use_feet_only=not args.ground_all_bones,
-        ground_smooth_window=args.ground_smooth,
-        ground_scale=args.ground_scale,
-        replace_xr_with=args.replace_xr_with,
-    )
-
-    print('Kaydedildi:', output)
+    try:
+        output = args.output or args.input.replace('.vmd', '_optimized.vmd')
+        optimize_vmd(
+            input_path=args.input,
+            output_path=output,
+            pos_eps=args.pos_eps,
+            rot_eps_deg=args.rot_eps_deg,
+            morph_eps=args.morph_eps,
+            key_step=args.key_step,
+            preserve_end_keys=not args.no_preserve_end,
+            remove_depth=args.remove_depth,
+            depth_smooth_window=args.depth_smooth,
+            depth_scale=args.depth_scale,
+            stabilize_ground_flag=args.stabilize_ground,
+            ground_target_y=args.ground_target_y,
+            ground_use_feet_only=not args.ground_all_bones,
+            ground_smooth_window=args.ground_smooth,
+            ground_scale=args.ground_scale,
+            replace_xr_with=args.replace_xr_with,
+            log=print,
+        )
+        print('Kaydedildi:', output)
+    except Exception as e:
+        print('Hata:', e, file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == '__main__':
